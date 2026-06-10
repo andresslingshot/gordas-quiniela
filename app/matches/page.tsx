@@ -44,7 +44,7 @@ export default function MatchesPage() {
           };
         });
         setScores(map);
-        setSaved(new Set(data.map((p: Pick) => p.match_id)));
+        setSaved(new Set(data.map((p: { match_id: number }) => p.match_id)));
       });
   }, [player]);
 
