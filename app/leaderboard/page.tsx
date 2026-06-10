@@ -21,15 +21,25 @@ export default function LeaderboardPage() {
       // Refresh results from football-data.org via our API route
       await fetch("/api/results").catch(() => {});
 
-      const [picksRes, resultsRes] = await Promise.all([
+      const [picksRes, resultsRes, playersRes] = await Promise.all([
         supabase.from("picks").select("player_name, match_id, home_score, away_score"),
         supabase.from("results").select("match_id, home_score, away_score, status"),
+        supabase.from("players").select("name").order("created_at", { ascending: true }),
       ]);
 
       const picks = (picksRes.data ?? []) as Pick[];
       const results = (resultsRes.data ?? []) as Result[];
+      const allPlayers = (playersRes.data ?? []) as { name: string }[];
 
-      setBoard(calcLeaderboard(picks, results));
+      const scored = calcLeaderboard(picks, results);
+      const scoredNames = new Set(scored.map((s) => s.playerName));
+
+      // add players with 0 pts who haven't scored yet
+      const zeros: PlayerScore[] = allPlayers
+        .filter((p) => !scoredNames.has(p.name))
+        .map((p) => ({ playerName: p.name, total: 0, exact: 0, outcome: 0, played: 0 }));
+
+      setBoard([...scored, ...zeros]);
       setLastUpdated(new Date().toLocaleTimeString());
       setLoading(false);
     }
@@ -39,7 +49,12 @@ export default function LeaderboardPage() {
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-center justify-between">
-        <h2 className="text-2xl font-black gold-text">Leaderboard</h2>
+        <div>
+          <h2 className="text-2xl font-black gold-text">Leaderboard</h2>
+          {board.length > 0 && (
+            <p className="text-xs text-slate-500">{board.length} player{board.length !== 1 ? "s" : ""} joined</p>
+          )}
+        </div>
         {lastUpdated && (
           <span className="text-xs text-slate-500">Updated {lastUpdated}</span>
         )}
