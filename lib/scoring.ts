@@ -62,5 +62,5 @@ export function calcLeaderboard(
     });
   });
 
-  return [...scoreMap.values()].sort((a, b) => b.total - a.total);
+  return Array.from(scoreMap.values()).sort((a, b) => b.total - a.total);
 }
