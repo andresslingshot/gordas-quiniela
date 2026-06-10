@@ -37,7 +37,7 @@ export default function MatchesPage() {
       .then(({ data }) => {
         if (!data) return;
         const map: ScoreMap = {};
-        data.forEach((p: Pick) => {
+        data.forEach((p: { match_id: number; home_score: number; away_score: number }) => {
           map[p.match_id] = {
             home: String(p.home_score),
             away: String(p.away_score),
