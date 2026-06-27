@@ -3,9 +3,10 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 
 const links = [
-  { href: "/matches", label: "Picks", icon: "⚽" },
-  { href: "/leaderboard", label: "Table", icon: "🏆" },
-  { href: "/my-picks", label: "Mine", icon: "👤" },
+  { href: "/matches",    label: "Picks",   icon: "⚽" },
+  { href: "/bracket",   label: "Bracket",  icon: "🗂️" },
+  { href: "/leaderboard", label: "Table",  icon: "🏆" },
+  { href: "/my-picks",  label: "Mine",     icon: "👤" },
 ];
 
 export default function BottomNav() {
