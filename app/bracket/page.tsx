@@ -103,7 +103,7 @@ export default function BracketPage() {
         {canEdit ? (
           <R32Setup
             qualifiedTeams={Object.values(Object.fromEntries(
-              [...matches.values()]
+              Array.from(matches.values())
                 .filter((m) => m.round === "r32" && m.home_team)
                 .flatMap((m) => [[m.home_team!, m.home_team!], [m.away_team!, m.away_team!]])
             ))}
