@@ -18,7 +18,7 @@ export const ROUND_POINTS: Record<KnockoutRound, number> = {
   r32: 2, r16: 4, qf: 6, sf: 8, final: 15,
 };
 
-export const BRACKET_LOCK_UTC = "2026-06-28T17:00:00Z";
+export const BRACKET_LOCK_UTC = process.env.NEXT_PUBLIC_BRACKET_LOCK_UTC ?? "2026-07-01T00:00:00Z";
 
 export function isBracketLocked(): boolean {
   return new Date() >= new Date(BRACKET_LOCK_UTC);

@@ -29,15 +29,11 @@ export default function Home() {
     }
 
     setLoading(true);
-    // upsert player
-    const { error: dbErr } = await supabase
-      .from("players")
-      .upsert({ name: trimmed }, { onConflict: "name" });
-
-    if (dbErr) {
-      setError("Connection error. Check your internet and try again.");
-      setLoading(false);
-      return;
+    // upsert player — if DB fails, still let them in
+    try {
+      await supabase.from("players").upsert({ name: trimmed }, { onConflict: "name" });
+    } catch (_) {
+      // non-fatal — player stored locally
     }
 
     localStorage.setItem("gq_player", trimmed);

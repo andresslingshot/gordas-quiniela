@@ -34,6 +34,7 @@ export default function BracketPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [savedSlots, setSavedSlots] = useState<Set<string>>(new Set());
+  const [adminMode, setAdminMode] = useState(false);
   const locked = isBracketLocked();
 
   useEffect(() => {
@@ -59,6 +60,15 @@ export default function BracketPage() {
     }
     load();
   }, [router]);
+
+  async function saveActualResult(slot: string, winner: string) {
+    const updated = new Map(matches);
+    const m = updated.get(slot);
+    if (!m) return;
+    updated.set(slot, { ...m, actual_winner: winner });
+    setMatches(updated);
+    await supabase.from("bracket_matches").update({ actual_winner: winner }).eq("slot", slot);
+  }
 
   async function savePick(slot: string, winner: string) {
     if (!player || !canEdit || locked) return;
@@ -133,7 +143,18 @@ export default function BracketPage() {
             {locked ? "🔒 Picks locked" : `Picks lock ${formatKickoff(BRACKET_LOCK_UTC, "ET")} ET`}
           </p>
         </div>
-        {saving && <span className="text-xs text-yellow-400 animate-pulse">Saving…</span>}
+        <div className="flex items-center gap-2">
+          {saving && <span className="text-xs text-yellow-400 animate-pulse">Saving…</span>}
+          {canEdit && (
+            <button
+              onClick={() => setAdminMode((v) => !v)}
+              className={`text-xs px-3 py-1.5 rounded-full font-bold transition-all
+                ${adminMode ? "bg-red-500 text-white" : "bg-slate-700 text-slate-300"}`}
+            >
+              {adminMode ? "✓ Result mode" : "Enter results"}
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Round tabs */}
@@ -186,7 +207,9 @@ export default function BracketPage() {
               playerPick={picks.get(match.slot) ?? null}
               isSaved={savedSlots.has(match.slot)}
               locked={locked || !canEdit}
+              adminMode={adminMode && canEdit}
               onPick={savePick}
+              onResult={saveActualResult}
             />
           ))}
         </div>
@@ -227,10 +250,12 @@ interface CardProps {
   playerPick: string | null;
   isSaved: boolean;
   locked: boolean;
+  adminMode: boolean;
   onPick: (slot: string, winner: string) => void;
+  onResult: (slot: string, winner: string) => void;
 }
 
-function MatchCard({ match, matches, playerPick, isSaved, locked, onPick }: CardProps) {
+function MatchCard({ match, matches, playerPick, isSaved, locked, adminMode, onPick, onResult }: CardProps) {
   const home = resolveTeam(match.slot, "home", matches, new Map());
   const away = resolveTeam(match.slot, "away", matches, new Map());
 
@@ -307,6 +332,35 @@ function MatchCard({ match, matches, playerPick, isSaved, locked, onPick }: Card
           );
         })}
       </div>
+
+      {/* Admin: mark actual winner */}
+      {adminMode && !hasResult && home && away && (
+        <div className="mt-3 border-t border-slate-700 pt-3">
+          <p className="text-xs text-red-400 font-bold mb-2">👑 Mark actual winner:</p>
+          <div className="flex gap-2">
+            {[home, away].map((team) => team && (
+              <button
+                key={team}
+                onClick={() => onResult(match.slot, team)}
+                className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg bg-red-900/40 border border-red-500/40 text-red-200 text-xs font-bold hover:bg-red-800/60"
+              >
+                {FLAGS[team] ?? "🏳️"} {team}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+      {adminMode && hasResult && (
+        <div className="mt-2 flex items-center justify-between">
+          <p className="text-xs text-green-400">✓ Result: {FLAGS[actual!] ?? ""} {actual}</p>
+          <button
+            onClick={() => onResult(match.slot, "")}
+            className="text-xs text-slate-500 hover:text-red-400"
+          >
+            Clear
+          </button>
+        </div>
+      )}
 
       {/* Score feedback */}
       {hasResult && playerPick && (
