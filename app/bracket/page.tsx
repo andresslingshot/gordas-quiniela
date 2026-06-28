@@ -357,6 +357,7 @@ function R32Setup({ onSaved }: { qualifiedTeams: string[]; onSaved: () => void }
     )
   );
   const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
 
   function set(slot: string, side: "home" | "away", value: string) {
     setMatchups((prev) => ({ ...prev, [slot]: { ...prev[slot], [side]: value } }));
@@ -367,12 +368,18 @@ function R32Setup({ onSaved }: { qualifiedTeams: string[]; onSaved: () => void }
   async function save() {
     if (!allFilled) return;
     setSaving(true);
-    const rows = Object.entries(matchups).map(([slot, { home, away }]) => ({
-      slot,
-      home_team: home,
-      away_team: away,
-    }));
-    await supabase.from("bracket_matches").upsert(rows, { onConflict: "slot" });
+    setError("");
+    for (const [slot, { home, away }] of Object.entries(matchups)) {
+      const { error: err } = await supabase
+        .from("bracket_matches")
+        .update({ home_team: home, away_team: away })
+        .eq("slot", slot);
+      if (err) {
+        setError(`Failed on ${slot}: ${err.message}`);
+        setSaving(false);
+        return;
+      }
+    }
     setSaving(false);
     onSaved();
   }
@@ -419,6 +426,11 @@ function R32Setup({ onSaved }: { qualifiedTeams: string[]; onSaved: () => void }
         })}
       </div>
 
+      {error && (
+        <div className="bg-red-900/30 border border-red-500/40 rounded-xl p-3 text-xs text-red-300 break-words">
+          {error}
+        </div>
+      )}
       <button
         onClick={save}
         disabled={!allFilled || saving}
