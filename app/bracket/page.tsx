@@ -58,14 +58,30 @@ export default function BracketPage() {
     load();
   }, [router]);
 
+  const [teamsError, setTeamsError] = useState("");
+
   async function refreshTeams() {
     setLoadingTeams(true);
-    await fetch("/api/qualified-teams");
-    const { data } = await supabase
-      .from("qualified_teams")
-      .select("name, flag, group_letter")
-      .order("group_letter", { ascending: true });
-    setTeams((data ?? []) as QualifiedTeam[]);
+    setTeamsError("");
+    try {
+      const res = await fetch("/api/qualified-teams");
+      const json = await res.json();
+      if (!res.ok || json.error) {
+        setTeamsError(`API said: ${json.error ?? res.status}. Log: ${(json.log ?? []).join(" | ")}`);
+        setLoadingTeams(false);
+        return;
+      }
+      const { data } = await supabase
+        .from("qualified_teams")
+        .select("name, flag, group_letter")
+        .order("group_letter", { ascending: true });
+      setTeams((data ?? []) as QualifiedTeam[]);
+      if ((data ?? []).length === 0) {
+        setTeamsError(`API responded (${json.method}) but returned 0 teams. Log: ${(json.log ?? []).join(" | ")}`);
+      }
+    } catch (e) {
+      setTeamsError(String(e));
+    }
     setLoadingTeams(false);
   }
 
@@ -148,8 +164,13 @@ export default function BracketPage() {
             disabled={loadingTeams}
             className="bg-yellow-400 text-black font-bold px-6 py-2 rounded-full text-sm disabled:opacity-50"
           >
-            {loadingTeams ? "Loading…" : "🔄 Check for qualified teams"}
+            {loadingTeams ? "Checking API…" : "🔄 Check for qualified teams"}
           </button>
+        )}
+        {teamsError && (
+          <div className="bg-red-900/30 border border-red-500/40 rounded-xl p-3 text-xs text-red-300 max-w-sm mx-auto text-left break-words">
+            {teamsError}
+          </div>
         )}
       </div>
     );
