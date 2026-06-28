@@ -2,7 +2,7 @@
 import { useEffect, useState } from "react";
 import { supabase, Pick, Result } from "@/lib/supabase";
 import { calcLeaderboard, PlayerScore } from "@/lib/scoring";
-import { calcBracketScores, BracketPlayerScore, BracketPick, KnockoutResult } from "@/lib/bracket";
+import { calcBracketScores, BracketPlayerScore, BracketPick, BracketMatch } from "@/lib/bracket";
 
 const MEDALS = ["🥇", "🥈", "🥉"];
 
@@ -35,22 +35,22 @@ export default function LeaderboardPage() {
         fetch("/api/knockout-results").catch(() => {}),
       ]);
 
-      const [picksRes, resultsRes, bPicksRes, bResultsRes, playersRes] = await Promise.all([
+      const [picksRes, resultsRes, bPicksRes, bMatchesRes, playersRes] = await Promise.all([
         supabase.from("picks").select("player_name, match_id, home_score, away_score"),
         supabase.from("results").select("match_id, home_score, away_score, status"),
-        supabase.from("bracket_picks").select("player_name, team_name, round"),
-        supabase.from("knockout_results").select("team_name, round_reached"),
+        supabase.from("bracket_picks").select("player_name, slot, picked_winner"),
+        supabase.from("bracket_matches").select("slot, round, position, home_team, away_team, actual_winner"),
         supabase.from("players").select("name").order("created_at", { ascending: true }),
       ]);
 
       const picks = (picksRes.data ?? []) as Pick[];
       const results = (resultsRes.data ?? []) as Result[];
       const bPicks = (bPicksRes.data ?? []) as BracketPick[];
-      const bResults = (bResultsRes.data ?? []) as KnockoutResult[];
+      const bMatches = (bMatchesRes.data ?? []) as BracketMatch[];
       const allPlayers = (playersRes.data ?? []) as { name: string }[];
 
       const groupScores = calcLeaderboard(picks, results);
-      const bracketScores = calcBracketScores(bPicks, bResults);
+      const bracketScores = calcBracketScores(bPicks, bMatches);
 
       const groupMap = new Map<string, PlayerScore>(groupScores.map((s) => [s.playerName, s]));
       const bracketMap = new Map<string, BracketPlayerScore>(bracketScores.map((s) => [s.playerName, s]));

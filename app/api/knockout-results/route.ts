@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
-import { KnockoutRound } from "@/lib/bracket";
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -18,14 +17,13 @@ const NAME_MAP: Record<string, string> = {
 };
 function normalize(name: string): string { return NAME_MAP[name] ?? name; }
 
-const STAGE_TO_ROUND: Record<string, KnockoutRound> = {
+const STAGE_MAP: Record<string, string> = {
+  "ROUND_OF_32":    "r32",
   "ROUND_OF_16":    "r16",
   "QUARTER_FINALS": "qf",
   "SEMI_FINALS":    "sf",
   "FINAL":          "final",
 };
-
-const ROUND_ORDER: KnockoutRound[] = ["r16", "qf", "sf", "final", "champion"];
 
 export async function GET() {
   try {
@@ -36,79 +34,61 @@ export async function GET() {
     if (!res.ok) return NextResponse.json({ error: "API error" }, { status: 502 });
 
     const data = await res.json();
-    const matches: ApiMatch[] = data.matches ?? [];
+    const apiMatches: ApiMatch[] = data.matches ?? [];
 
-    // Track the furthest round each team has reached
-    const teamProgress = new Map<string, KnockoutRound>();
+    // Fetch our bracket_matches to find which slot each match belongs to
+    const { data: slots } = await supabase
+      .from("bracket_matches")
+      .select("slot, round, position, home_team, away_team");
 
-    for (const m of matches) {
-      const round = STAGE_TO_ROUND[m.stage];
+    const slotList = (slots ?? []) as { slot: string; round: string; position: number; home_team: string | null; away_team: string | null }[];
+
+    const updates: { slot: string; actual_winner: string }[] = [];
+
+    for (const m of apiMatches) {
+      const round = STAGE_MAP[m.stage];
       if (!round || m.status !== "FINISHED") continue;
 
       const winner = getWinner(m);
-      const loser = getLoser(m);
-      if (!winner || !loser) continue;
+      if (!winner) continue;
 
-      const winnerName = normalize(winner);
-      const loserName = normalize(loser);
+      const home = normalize(m.homeTeam?.name ?? "");
+      const away = normalize(m.awayTeam?.name ?? "");
 
-      // Winner advances — update if this round is further than recorded
-      const winnerCurrent = teamProgress.get(winnerName);
-      if (!winnerCurrent || ROUND_ORDER.indexOf(round) > ROUND_ORDER.indexOf(winnerCurrent)) {
-        // Winner reached at least this round; if it's the final, they're champion
-        const nextRound = round === "final" ? "champion" : round;
-        teamProgress.set(winnerName, nextRound);
-      }
+      // Match by teams
+      const slot = slotList.find(
+        (s) => s.round === round && s.home_team === home && s.away_team === away
+      );
+      if (!slot) continue;
 
-      // Loser's furthest round is this round
-      const loserCurrent = teamProgress.get(loserName);
-      if (!loserCurrent || ROUND_ORDER.indexOf(round) > ROUND_ORDER.indexOf(loserCurrent)) {
-        teamProgress.set(loserName, round);
-      }
+      updates.push({ slot: slot.slot, actual_winner: normalize(winner) });
     }
 
-    const rows = Array.from(teamProgress.entries()).map(([team_name, round_reached]) => ({
-      team_name,
-      round_reached,
-    }));
-
-    if (rows.length > 0) {
-      await supabase
-        .from("knockout_results")
-        .upsert(rows, { onConflict: "team_name" });
+    for (const u of updates) {
+      await supabase.from("bracket_matches").update({ actual_winner: u.actual_winner }).eq("slot", u.slot);
     }
 
-    return NextResponse.json({ updated: rows.length });
+    return NextResponse.json({ updated: updates.length });
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }
 }
 
 function getWinner(m: ApiMatch): string | null {
-  if (!m.score?.fullTime) return null;
-  const { home, away } = m.score.fullTime;
-  if (home === null || away === null) return null;
-  if (home > away) return m.homeTeam?.name ?? null;
-  if (away > home) return m.awayTeam?.name ?? null;
-  // Penalty shootout winner
-  if (m.score.penalties) {
-    const { home: ph, away: pa } = m.score.penalties;
-    if (ph !== null && pa !== null) return ph > pa ? (m.homeTeam?.name ?? null) : (m.awayTeam?.name ?? null);
-  }
+  const h = m.score?.fullTime?.home;
+  const a = m.score?.fullTime?.away;
+  if (h === null || h === undefined || a === null || a === undefined) return null;
+  if (h > a) return m.homeTeam?.name ?? null;
+  if (a > h) return m.awayTeam?.name ?? null;
+  const ph = m.score?.penalties?.home;
+  const pa = m.score?.penalties?.away;
+  if (ph != null && pa != null) return ph > pa ? (m.homeTeam?.name ?? null) : (m.awayTeam?.name ?? null);
   return null;
 }
 
-function getLoser(m: ApiMatch): string | null {
-  const winner = getWinner(m);
-  if (!winner) return null;
-  return winner === m.homeTeam?.name ? (m.awayTeam?.name ?? null) : (m.homeTeam?.name ?? null);
-}
-
 interface ApiMatch {
-  stage: string;
-  status: string;
-  homeTeam?: { name: string };
-  awayTeam?: { name: string };
+  stage: string; status: string;
+  homeTeam?: { name: string }; awayTeam?: { name: string };
   score?: {
     fullTime?: { home: number | null; away: number | null };
     penalties?: { home: number | null; away: number | null };

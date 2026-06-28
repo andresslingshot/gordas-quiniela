@@ -3,29 +3,37 @@ import { useEffect, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import {
-  ROUNDS, ROUND_LABELS, ROUND_PICK_COUNT, ROUND_POINTS,
+  ROUNDS, ROUND_LABELS, ROUND_MATCH_COUNT, ROUND_POINTS,
   isBracketLocked, BRACKET_LOCK_UTC,
-  QualifiedTeam, BracketPick, KnockoutRound,
+  FEEDER, BracketMatch, BracketPick, KnockoutRound, resolveTeam,
 } from "@/lib/bracket";
 import { formatKickoff } from "@/lib/timezones";
 
-type PickMap = Record<KnockoutRound, Set<string>>;
-
-function emptyPickMap(): PickMap {
-  return { r16: new Set(), qf: new Set(), sf: new Set(), final: new Set(), champion: new Set() };
-}
+const FLAGS: Record<string, string> = {
+  "Mexico":"🇲🇽","South Africa":"🇿🇦","South Korea":"🇰🇷","Czechia":"🇨🇿",
+  "Canada":"🇨🇦","Bosnia & Herzegovina":"🇧🇦","Qatar":"🇶🇦","Switzerland":"🇨🇭",
+  "Brazil":"🇧🇷","Morocco":"🇲🇦","Haiti":"🇭🇹","Scotland":"🏴󠁧󠁢󠁳󠁣󠁴󠁿",
+  "USA":"🇺🇸","Paraguay":"🇵🇾","Australia":"🇦🇺","Türkiye":"🇹🇷",
+  "Germany":"🇩🇪","Curaçao":"🇨🇼","Netherlands":"🇳🇱","Japan":"🇯🇵",
+  "Ivory Coast":"🇨🇮","Ecuador":"🇪🇨","Tunisia":"🇹🇳","Sweden":"🇸🇪",
+  "Spain":"🇪🇸","Cape Verde":"🇨🇻","Belgium":"🇧🇪","Egypt":"🇪🇬",
+  "Saudi Arabia":"🇸🇦","Uruguay":"🇺🇾","Iran":"🇮🇷","New Zealand":"🇳🇿",
+  "France":"🇫🇷","Senegal":"🇸🇳","Iraq":"🇮🇶","Norway":"🇳🇴",
+  "Argentina":"🇦🇷","Algeria":"🇩🇿","Austria":"🇦🇹","Jordan":"🇯🇴",
+  "Portugal":"🇵🇹","Congo DR":"🇨🇩","England":"🏴󠁧󠁢󠁥󠁮󠁧󠁿","Croatia":"🇭🇷",
+  "Ghana":"🇬🇭","Panama":"🇵🇦","Colombia":"🇨🇴","Uzbekistan":"🇺🇿",
+};
 
 export default function BracketPage() {
   const router = useRouter();
   const [player, setPlayer] = useState<string | null>(null);
   const [canEdit, setCanEdit] = useState(false);
-  const [teams, setTeams] = useState<QualifiedTeam[]>([]);
-  const [picks, setPicks] = useState<PickMap>(emptyPickMap());
-  const [activeRound, setActiveRound] = useState<KnockoutRound>("r16");
+  const [matches, setMatches] = useState<Map<string, BracketMatch>>(new Map());
+  const [picks, setPicks] = useState<Map<string, string>>(new Map()); // slot → picked winner
+  const [activeRound, setActiveRound] = useState<KnockoutRound>("r32");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [saved, setSaved] = useState(false);
-  const [loadingTeams, setLoadingTeams] = useState(false);
+  const [savedSlots, setSavedSlots] = useState<Set<string>>(new Set());
   const locked = isBracketLocked();
 
   useEffect(() => {
@@ -35,152 +43,80 @@ export default function BracketPage() {
     setCanEdit(localStorage.getItem("gq_can_edit") === "true");
 
     async function load() {
-      // Fetch qualified teams
-      const { data: teamData } = await supabase
-        .from("qualified_teams")
-        .select("name, flag, group_letter")
-        .order("group_letter", { ascending: true });
-      setTeams((teamData ?? []) as QualifiedTeam[]);
+      const [matchRes, pickRes] = await Promise.all([
+        supabase.from("bracket_matches").select("*").order("position"),
+        supabase.from("bracket_picks").select("slot, picked_winner").eq("player_name", stored!),
+      ]);
+      const mMap = new Map<string, BracketMatch>();
+      (matchRes.data ?? []).forEach((m: BracketMatch) => mMap.set(m.slot, m));
+      setMatches(mMap);
 
-      // Fetch existing bracket picks
-      const { data: pickData } = await supabase
-        .from("bracket_picks")
-        .select("team_name, round")
-        .eq("player_name", stored);
-
-      const map = emptyPickMap();
-      (pickData ?? []).forEach((p: { team_name: string; round: KnockoutRound }) => {
-        map[p.round].add(p.team_name);
-      });
-      setPicks(map);
+      const pMap = new Map<string, string>();
+      (pickRes.data ?? []).forEach((p: { slot: string; picked_winner: string }) => pMap.set(p.slot, p.picked_winner));
+      setPicks(pMap);
+      setSavedSlots(new Set(pMap.keys()));
       setLoading(false);
     }
     load();
   }, [router]);
 
-  const [teamsError, setTeamsError] = useState("");
-
-  async function refreshTeams() {
-    setLoadingTeams(true);
-    setTeamsError("");
-    try {
-      const res = await fetch("/api/qualified-teams");
-      const json = await res.json();
-      if (!res.ok || json.error) {
-        setTeamsError(`API said: ${json.error ?? res.status}. Log: ${(json.log ?? []).join(" | ")}`);
-        setLoadingTeams(false);
-        return;
-      }
-      const { data } = await supabase
-        .from("qualified_teams")
-        .select("name, flag, group_letter")
-        .order("group_letter", { ascending: true });
-      setTeams((data ?? []) as QualifiedTeam[]);
-      if ((data ?? []).length === 0) {
-        setTeamsError(`API responded (${json.method}) but returned 0 teams. Log: ${(json.log ?? []).join(" | ")}`);
-      }
-    } catch (e) {
-      setTeamsError(String(e));
-    }
-    setLoadingTeams(false);
-  }
-
-  function toggleTeam(team: string) {
-    if (locked || !canEdit) return;
-    setPicks((prev) => {
-      const updated = { ...prev, [activeRound]: new Set(prev[activeRound]) };
-      const pool = getPool(activeRound, prev);
-
-      if (!pool.has(team)) return prev; // not in eligible pool
-
-      if (updated[activeRound].has(team)) {
-        updated[activeRound].delete(team);
-        // Remove from later rounds too
-        const laterRounds = ROUNDS.slice(ROUNDS.indexOf(activeRound) + 1);
-        laterRounds.forEach((r) => {
-          const s = new Set(prev[r]);
-          s.delete(team);
-          updated[r] = s;
-        });
-      } else if (updated[activeRound].size < ROUND_PICK_COUNT[activeRound]) {
-        updated[activeRound].add(team);
-      }
-      return updated;
-    });
-    setSaved(false);
-  }
-
-  // Eligible teams for a round = picks from previous round (or all 32 for r16)
-  function getPool(round: KnockoutRound, currentPicks: PickMap): Set<string> {
-    const idx = ROUNDS.indexOf(round);
-    if (idx === 0) return new Set(teams.map((t) => t.name));
-    return currentPicks[ROUNDS[idx - 1]];
-  }
-
-  const savePicks = useCallback(async () => {
-    if (!player || !canEdit) return;
+  async function savePick(slot: string, winner: string) {
+    if (!player || !canEdit || locked) return;
+    setPicks((prev) => new Map(prev).set(slot, winner));
+    setSavedSlots((prev) => { const n = new Set(prev); n.delete(slot); return n; });
     setSaving(true);
-
-    // Delete existing and re-insert
-    await supabase.from("bracket_picks").delete().eq("player_name", player);
-
-    const rows: BracketPick[] = [];
-    ROUNDS.forEach((round) => {
-      picks[round].forEach((team) => {
-        rows.push({ player_name: player, team_name: team, round });
-      });
-    });
-
-    if (rows.length > 0) {
-      await supabase.from("bracket_picks").insert(rows);
-    }
+    await supabase.from("bracket_picks").upsert(
+      { player_name: player, slot, picked_winner: winner },
+      { onConflict: "player_name,slot" }
+    );
+    setSavedSlots((prev) => new Set(prev).add(slot));
     setSaving(false);
-    setSaved(true);
-  }, [player, canEdit, picks]);
+  }
 
-  const totalPicked = ROUNDS.reduce((acc, r) => acc + picks[r].size, 0);
-  const totalNeeded = ROUNDS.reduce((acc, r) => acc + ROUND_PICK_COUNT[r], 0); // 31
+  const roundMatches = ROUNDS.reduce((acc, r) => {
+    const count = ROUND_MATCH_COUNT[r];
+    acc[r] = Array.from({ length: count }, (_, i) => {
+      const slot = r === "final" ? "final" : `${r}_${i + 1}`;
+      return matches.get(slot) ?? { slot, round: r, position: i + 1, home_team: null, away_team: null, actual_winner: null };
+    });
+    return acc;
+  }, {} as Record<KnockoutRound, BracketMatch[]>);
+
+  const r32Ready = roundMatches.r32.some((m) => m.home_team !== null);
+
+  const picksThisRound = roundMatches[activeRound].filter((m) => picks.has(m.slot)).length;
+  const totalThisRound = ROUND_MATCH_COUNT[activeRound];
 
   if (!player) return null;
 
-  // ── Coming soon / manual entry ────────────────────────────────────────────
-  if (!loading && teams.length === 0) {
+  // ── Setup needed ──────────────────────────────────────────────────────────
+  if (!loading && !r32Ready) {
     return (
-      <div className="flex flex-col gap-6 py-6">
+      <div className="flex flex-col gap-6 py-4">
         <div className="text-center">
-          <div className="text-5xl mb-3">🔜</div>
-          <h2 className="text-2xl font-black gold-text mb-1">Bracket Coming Soon</h2>
+          <div className="text-5xl mb-3">🗂️</div>
+          <h2 className="text-2xl font-black gold-text mb-1">Bracket Setup</h2>
           <p className="text-slate-400 text-sm">
-            Picks lock: {formatKickoff(BRACKET_LOCK_UTC, "ET")} ET
+            Picks lock {formatKickoff(BRACKET_LOCK_UTC, "ET")} ET
           </p>
         </div>
-
-        {canEdit && (
-          <>
-            <button
-              onClick={refreshTeams}
-              disabled={loadingTeams}
-              className="bg-yellow-400 text-black font-bold px-6 py-2 rounded-full text-sm disabled:opacity-50 mx-auto"
-            >
-              {loadingTeams ? "Checking API…" : "🔄 Auto-fetch qualified teams"}
-            </button>
-            {teamsError && (
-              <p className="text-xs text-orange-400 text-center">{teamsError.split("Log:")[0]}</p>
-            )}
-
-            <div className="border-t border-slate-700 pt-4">
-              <p className="text-sm font-bold text-white mb-1">Or select manually:</p>
-              <p className="text-xs text-slate-400 mb-3">
-                Tick the 32 teams that qualified, then tap Save.
-              </p>
-              <ManualTeamSelector onSave={(selected) => setTeams(selected)} />
-            </div>
-          </>
-        )}
-
-        {!canEdit && (
+        {canEdit ? (
+          <R32Setup
+            qualifiedTeams={Object.values(Object.fromEntries(
+              [...matches.values()]
+                .filter((m) => m.round === "r32" && m.home_team)
+                .flatMap((m) => [[m.home_team!, m.home_team!], [m.away_team!, m.away_team!]])
+            ))}
+            onSaved={async () => {
+              const { data } = await supabase.from("bracket_matches").select("*").order("position");
+              const mMap = new Map<string, BracketMatch>();
+              (data ?? []).forEach((m: BracketMatch) => mMap.set(m.slot, m));
+              setMatches(mMap);
+            }}
+          />
+        ) : (
           <p className="text-center text-slate-400 text-sm">
-            The organizer will unlock the bracket once all 32 teams are confirmed.
+            The organizer is setting up the bracket — check back soon!
           </p>
         )}
       </div>
@@ -194,41 +130,18 @@ export default function BracketPage() {
         <div>
           <h2 className="text-2xl font-black gold-text">Bracket</h2>
           <p className="text-slate-400 text-xs">
-            {locked
-              ? "🔒 Picks locked"
-              : `Picks lock ${formatKickoff(BRACKET_LOCK_UTC, "ET")} ET`}
+            {locked ? "🔒 Picks locked" : `Picks lock ${formatKickoff(BRACKET_LOCK_UTC, "ET")} ET`}
           </p>
         </div>
-        {!locked && canEdit && (
-          <button
-            onClick={savePicks}
-            disabled={saving || saved}
-            className={`px-4 py-2 rounded-full font-bold text-sm transition-all
-              ${saved
-                ? "bg-green-800/50 text-green-300"
-                : "bg-yellow-400 text-black hover:bg-yellow-300"}`}
-          >
-            {saving ? "Saving…" : saved ? "✓ Saved" : `Save All (${totalPicked}/${totalNeeded})`}
-          </button>
-        )}
+        {saving && <span className="text-xs text-yellow-400 animate-pulse">Saving…</span>}
       </div>
 
-      {/* Progress bar */}
-      {!locked && (
-        <div className="bg-slate-800 rounded-full h-2 overflow-hidden">
-          <div
-            className="bg-yellow-400 h-2 rounded-full transition-all"
-            style={{ width: `${(totalPicked / totalNeeded) * 100}%` }}
-          />
-        </div>
-      )}
-
       {/* Round tabs */}
-      <div className="flex gap-1.5 overflow-x-auto pb-1">
+      <div className="flex gap-1.5 overflow-x-auto pb-1 -mx-1 px-1">
         {ROUNDS.map((r) => {
-          const count = picks[r].size;
-          const needed = ROUND_PICK_COUNT[r];
-          const complete = count === needed;
+          const picked = roundMatches[r].filter((m) => picks.has(m.slot)).length;
+          const total = ROUND_MATCH_COUNT[r];
+          const complete = picked === total;
           return (
             <button
               key={r}
@@ -240,66 +153,65 @@ export default function BracketPage() {
                     ? "bg-green-800/60 text-green-300"
                     : "bg-slate-700 text-slate-300"}`}
             >
-              <span>{r === "champion" ? "🏆" : r.toUpperCase()}</span>
-              <span className="text-xs opacity-75">{count}/{needed}</span>
+              <span>{r === "final" ? "🏆" : ROUND_LABELS[r].split(" ").pop()}</span>
+              <span className="opacity-75">{picked}/{total}</span>
             </button>
           );
         })}
       </div>
 
-      {/* Round info */}
-      <div className="bg-slate-800/60 border border-yellow-500/20 rounded-xl px-4 py-3 flex items-center justify-between">
+      {/* Round header */}
+      <div className="flex items-center justify-between bg-slate-800/60 border border-yellow-500/20 rounded-xl px-4 py-3">
         <div>
           <p className="font-bold text-white">{ROUND_LABELS[activeRound]}</p>
           <p className="text-xs text-slate-400">
-            Pick {ROUND_PICK_COUNT[activeRound]} team{ROUND_PICK_COUNT[activeRound] !== 1 ? "s" : ""} ·{" "}
-            <span className="text-yellow-400 font-semibold">{ROUND_POINTS[activeRound]} pts each</span> if correct
+            {picksThisRound}/{totalThisRound} picked ·{" "}
+            <span className="text-yellow-400">{ROUND_POINTS[activeRound]} pts</span> per correct pick
           </p>
-        </div>
-        <div className="text-right">
-          <p className="text-2xl font-black text-yellow-400">{picks[activeRound].size}</p>
-          <p className="text-xs text-slate-500">of {ROUND_PICK_COUNT[activeRound]}</p>
         </div>
       </div>
 
-      {/* Team grid */}
+      {/* Match cards */}
       {loading ? (
-        <div className="grid grid-cols-2 gap-2">
-          {[...Array(8)].map((_, i) => (
-            <div key={i} className="h-16 bg-slate-800/50 rounded-xl animate-pulse" />
-          ))}
+        <div className="flex flex-col gap-3">
+          {[...Array(4)].map((_, i) => <div key={i} className="h-28 bg-slate-800/50 rounded-xl animate-pulse" />)}
         </div>
       ) : (
-        <TeamGrid
-          teams={teams}
-          pool={getPool(activeRound, picks)}
-          selected={picks[activeRound]}
-          maxPicks={ROUND_PICK_COUNT[activeRound]}
-          locked={locked || !canEdit}
-          onToggle={toggleTeam}
-        />
+        <div className="flex flex-col gap-3">
+          {roundMatches[activeRound].map((match) => (
+            <MatchCard
+              key={match.slot}
+              match={match}
+              matches={matches}
+              playerPick={picks.get(match.slot) ?? null}
+              isSaved={savedSlots.has(match.slot)}
+              locked={locked || !canEdit}
+              onPick={savePick}
+            />
+          ))}
+        </div>
       )}
 
       {/* Round navigation */}
-      <div className="flex justify-between mt-2">
+      <div className="flex justify-between mt-1">
         <button
           onClick={() => setActiveRound(ROUNDS[ROUNDS.indexOf(activeRound) - 1])}
-          disabled={activeRound === "r16"}
+          disabled={activeRound === "r32"}
           className="text-sm text-slate-400 hover:text-white disabled:opacity-30 px-3 py-1.5 rounded-lg"
         >
           ← Previous
         </button>
         <button
           onClick={() => setActiveRound(ROUNDS[ROUNDS.indexOf(activeRound) + 1])}
-          disabled={activeRound === "champion"}
+          disabled={activeRound === "final"}
           className="text-sm text-yellow-400 hover:text-yellow-300 disabled:opacity-30 px-3 py-1.5 rounded-lg font-semibold"
         >
           Next →
         </button>
       </div>
 
-      {!canEdit && (
-        <p className="text-center text-xs text-orange-400 mt-2">
+      {!canEdit && !locked && (
+        <p className="text-center text-xs text-orange-400">
           👁 View only — enter the PIN on the home page to submit picks
         </p>
       )}
@@ -307,9 +219,111 @@ export default function BracketPage() {
   );
 }
 
-// ── Manual Team Selector ──────────────────────────────────────────────────────
+// ── Match Card ────────────────────────────────────────────────────────────────
 
-const ALL_48: { name: string; flag: string; group: string }[] = [
+interface CardProps {
+  match: BracketMatch;
+  matches: Map<string, BracketMatch>;
+  playerPick: string | null;
+  isSaved: boolean;
+  locked: boolean;
+  onPick: (slot: string, winner: string) => void;
+}
+
+function MatchCard({ match, matches, playerPick, isSaved, locked, onPick }: CardProps) {
+  const home = resolveTeam(match.slot, "home", matches, new Map());
+  const away = resolveTeam(match.slot, "away", matches, new Map());
+
+  const actual = match.actual_winner;
+  const hasResult = !!actual;
+
+  function scoreClass(team: string | null) {
+    if (!hasResult || !team) return "";
+    if (team === actual) return "text-green-400";
+    return "text-slate-500";
+  }
+
+  return (
+    <div className={`rounded-xl border p-4 transition-all
+      ${hasResult
+        ? playerPick === actual
+          ? "bg-green-900/20 border-green-500/40"
+          : playerPick
+            ? "bg-slate-800/40 border-slate-700/30"
+            : "bg-slate-800/40 border-slate-700/30"
+        : "bg-slate-800/70 border-yellow-500/20"}`}
+    >
+      {/* Match label */}
+      <div className="flex items-center gap-2 mb-3">
+        <span className="text-xs font-bold text-slate-500 uppercase">
+          Match {match.position}
+        </span>
+        {hasResult && (
+          <span className="text-xs px-2 py-0.5 rounded-full bg-slate-700 text-slate-300">
+            ✓ Result in
+          </span>
+        )}
+        {playerPick && isSaved && !hasResult && (
+          <span className="text-xs text-green-400">✓ Saved</span>
+        )}
+      </div>
+
+      {/* Teams */}
+      <div className="flex flex-col gap-2">
+        {[
+          { team: home, side: "home" as const },
+          { team: away, side: "away" as const },
+        ].map(({ team, side }) => {
+          const isPick = playerPick === team;
+          const isWinner = actual === team;
+          const isLoser = hasResult && team && team !== actual;
+          const tbd = !team;
+
+          return (
+            <button
+              key={side}
+              disabled={locked || tbd || hasResult}
+              onClick={() => team && onPick(match.slot, team)}
+              className={`flex items-center gap-3 px-4 py-3 rounded-xl border transition-all text-left w-full
+                ${isWinner
+                  ? "bg-green-800/40 border-green-500/60 text-white"
+                  : isPick && !hasResult
+                    ? "bg-yellow-400/20 border-yellow-400 text-white"
+                    : isLoser
+                      ? "bg-slate-800/30 border-slate-700/20 text-slate-500"
+                      : tbd
+                        ? "bg-slate-800/20 border-slate-700/20 text-slate-600 cursor-default"
+                        : locked || hasResult
+                          ? "bg-slate-800/40 border-slate-700/30 text-slate-300 cursor-default"
+                          : "bg-slate-700/50 border-slate-600/50 text-slate-200 hover:border-yellow-500/50 hover:bg-slate-700/80"}`}
+            >
+              <span className="text-2xl shrink-0">{team ? (FLAGS[team] ?? "🏳️") : "❓"}</span>
+              <span className={`font-bold text-sm ${scoreClass(team)}`}>
+                {team ?? "TBD"}
+              </span>
+              {isWinner && <span className="ml-auto text-green-400 font-bold">🏆</span>}
+              {isPick && !hasResult && <span className="ml-auto text-yellow-400">✓</span>}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Score feedback */}
+      {hasResult && playerPick && (
+        <p className={`text-xs mt-2 text-center font-semibold
+          ${playerPick === actual ? "text-green-400" : "text-slate-500"}`}>
+          {playerPick === actual
+            ? `⭐ Correct! +${ROUND_POINTS[match.round]} pts`
+            : `You picked ${FLAGS[playerPick] ?? ""} ${playerPick}`}
+        </p>
+      )}
+    </div>
+  );
+}
+
+// ── R32 Setup (admin only) ────────────────────────────────────────────────────
+
+const ALL_48 = [
   { name: "Mexico", flag: "🇲🇽", group: "A" }, { name: "South Korea", flag: "🇰🇷", group: "A" },
   { name: "Czechia", flag: "🇨🇿", group: "A" }, { name: "South Africa", flag: "🇿🇦", group: "A" },
   { name: "Canada", flag: "🇨🇦", group: "B" }, { name: "Qatar", flag: "🇶🇦", group: "B" },
@@ -336,140 +350,82 @@ const ALL_48: { name: string; flag: string; group: string }[] = [
   { name: "Ghana", flag: "🇬🇭", group: "L" }, { name: "Panama", flag: "🇵🇦", group: "L" },
 ];
 
-function ManualTeamSelector({ onSave }: { onSave: (teams: QualifiedTeam[]) => void }) {
-  const [selected, setSelected] = useState<Set<string>>(new Set());
+function R32Setup({ onSaved }: { qualifiedTeams: string[]; onSaved: () => void }) {
+  const [matchups, setMatchups] = useState<Record<string, { home: string; away: string }>>(
+    Object.fromEntries(
+      Array.from({ length: 16 }, (_, i) => [`r32_${i + 1}`, { home: "", away: "" }])
+    )
+  );
   const [saving, setSaving] = useState(false);
 
-  function toggle(name: string) {
-    setSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(name)) next.delete(name);
-      else if (next.size < 32) next.add(name);
-      return next;
-    });
+  function set(slot: string, side: "home" | "away", value: string) {
+    setMatchups((prev) => ({ ...prev, [slot]: { ...prev[slot], [side]: value } }));
   }
+
+  const allFilled = Object.values(matchups).every((m) => m.home && m.away);
 
   async function save() {
-    if (selected.size !== 32) return;
+    if (!allFilled) return;
     setSaving(true);
-    const rows = ALL_48
-      .filter((t) => selected.has(t.name))
-      .map((t) => ({ name: t.name, flag: t.flag, group_letter: t.group }));
-
-    const { createClient } = await import("@supabase/supabase-js");
-    const sb = createClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-    );
-    await sb.from("qualified_teams").upsert(rows, { onConflict: "name" });
-    onSave(rows as QualifiedTeam[]);
+    const rows = Object.entries(matchups).map(([slot, { home, away }]) => ({
+      slot,
+      home_team: home,
+      away_team: away,
+    }));
+    await supabase.from("bracket_matches").upsert(rows, { onConflict: "slot" });
     setSaving(false);
+    onSaved();
   }
 
-  const grouped = ["A","B","C","D","E","F","G","H","I","J","K","L"].map((g) => ({
-    group: g,
-    teams: ALL_48.filter((t) => t.group === g),
-  }));
-
   return (
-    <div className="flex flex-col gap-3">
-      <div className="flex items-center justify-between">
-        <span className={`text-sm font-bold ${selected.size === 32 ? "text-green-400" : "text-yellow-400"}`}>
-          {selected.size}/32 selected
-        </span>
-        <button
-          onClick={save}
-          disabled={selected.size !== 32 || saving}
-          className="bg-yellow-400 text-black font-bold px-4 py-1.5 rounded-full text-sm disabled:opacity-40"
-        >
-          {saving ? "Saving…" : "Save & Open Bracket"}
-        </button>
+    <div className="flex flex-col gap-4">
+      <div className="bg-yellow-400/10 border border-yellow-500/30 rounded-xl p-3 text-sm text-yellow-200">
+        <p className="font-bold mb-1">👑 Admin: Set up the R32 bracket</p>
+        <p className="text-xs text-yellow-300/80">
+          Enter the 16 Round of 32 matchups. Use the official FIFA bracket order.
+          Players will then pick winners round by round.
+        </p>
       </div>
 
-      {grouped.map(({ group, teams }) => (
-        <div key={group}>
-          <p className="text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5">Group {group}</p>
-          <div className="grid grid-cols-2 gap-1.5">
-            {teams.map((t) => {
-              const isOn = selected.has(t.name);
-              const full = selected.size >= 32 && !isOn;
-              return (
-                <button
-                  key={t.name}
-                  onClick={() => toggle(t.name)}
-                  disabled={full}
-                  className={`flex items-center gap-2 px-3 py-2.5 rounded-xl border text-left transition-all text-xs
-                    ${isOn
-                      ? "bg-yellow-400/20 border-yellow-400 text-white font-bold"
-                      : full
-                        ? "bg-slate-800/20 border-slate-700/20 text-slate-600 cursor-not-allowed"
-                        : "bg-slate-800/60 border-slate-700/40 text-slate-200 hover:border-slate-500"}`}
-                >
-                  <span className="text-xl">{t.flag}</span>
-                  <span className="truncate">{t.name}</span>
-                  {isOn && <span className="ml-auto text-yellow-400">✓</span>}
-                </button>
-              );
-            })}
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-// ── Team Grid ─────────────────────────────────────────────────────────────────
-
-interface GridProps {
-  teams: QualifiedTeam[];
-  pool: Set<string>;
-  selected: Set<string>;
-  maxPicks: number;
-  locked: boolean;
-  onToggle: (name: string) => void;
-}
-
-function TeamGrid({ teams, pool, selected, maxPicks, locked, onToggle }: GridProps) {
-  const full = selected.size >= maxPicks;
-
-  if (pool.size === 0) {
-    return (
-      <div className="text-center py-8 text-slate-400 text-sm">
-        Pick teams in the previous round first.
-      </div>
-    );
-  }
-
-  const poolTeams = teams.filter((t) => pool.has(t.name));
-
-  return (
-    <div className="grid grid-cols-2 gap-2">
-      {poolTeams.map((team) => {
-        const isSelected = selected.has(team.name);
-        const isDisabled = locked || (!isSelected && full);
-        return (
-          <button
-            key={team.name}
-            onClick={() => onToggle(team.name)}
-            disabled={isDisabled}
-            className={`flex items-center gap-2 px-3 py-3 rounded-xl border text-left transition-all
-              ${isSelected
-                ? "bg-yellow-400/20 border-yellow-400 text-white"
-                : isDisabled
-                  ? "bg-slate-800/30 border-slate-700/30 text-slate-600 cursor-not-allowed"
-                  : "bg-slate-800/60 border-slate-700/40 text-slate-200 hover:border-slate-500"}`}
-          >
-            <span className="text-2xl shrink-0">{team.flag}</span>
-            <div className="min-w-0">
-              <p className="text-xs font-bold leading-tight truncate">{team.name}</p>
-              {team.group_letter && (
-                <p className="text-xs text-slate-500">Group {team.group_letter}</p>
-              )}
+      <div className="flex flex-col gap-3">
+        {Array.from({ length: 16 }, (_, i) => {
+          const slot = `r32_${i + 1}`;
+          const m = matchups[slot];
+          return (
+            <div key={slot} className="bg-slate-800/60 border border-slate-700/40 rounded-xl p-3">
+              <p className="text-xs font-bold text-slate-400 mb-2">Match {i + 1}</p>
+              <div className="flex flex-col gap-2">
+                {(["home", "away"] as const).map((side) => (
+                  <select
+                    key={side}
+                    value={m[side]}
+                    onChange={(e) => set(slot, side, e.target.value)}
+                    className="bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-white
+                      focus:outline-none focus:border-yellow-400 w-full"
+                  >
+                    <option value="">— Select team —</option>
+                    {["A","B","C","D","E","F","G","H","I","J","K","L"].map((g) => (
+                      <optgroup key={g} label={`Group ${g}`}>
+                        {ALL_48.filter((t) => t.group === g).map((t) => (
+                          <option key={t.name} value={t.name}>{t.flag} {t.name}</option>
+                        ))}
+                      </optgroup>
+                    ))}
+                  </select>
+                ))}
+              </div>
             </div>
-            {isSelected && <span className="ml-auto shrink-0 text-yellow-400">✓</span>}
-          </button>
-        );
-      })}
+          );
+        })}
+      </div>
+
+      <button
+        onClick={save}
+        disabled={!allFilled || saving}
+        className="bg-yellow-400 text-black font-black py-3 rounded-xl disabled:opacity-40 sticky bottom-24"
+      >
+        {saving ? "Saving…" : allFilled ? "🚀 Open Bracket for Everyone" : `Fill all 16 matchups to continue`}
+      </button>
     </div>
   );
 }
