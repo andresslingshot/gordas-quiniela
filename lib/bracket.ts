@@ -122,5 +122,5 @@ export function calcBracketScores(
     scores.push({ playerName, bracketTotal: total, correct });
   });
 
-  return scores.sort((a, b) => b.bracketTotal - a.bracketTotal);
+  return Array.from(scores).sort((a, b) => b.bracketTotal - a.bracketTotal);
 }
