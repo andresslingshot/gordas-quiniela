@@ -87,15 +87,29 @@ export async function GET() {
     }
 
     const standData = await standRes.json();
-    const standings: StandingGroup[] = standData.standings ?? [];
-    log.push(`Standing groups found: ${standings.length}`);
+    const rawStandings = standData.standings ?? [];
+    log.push(`Top-level standings entries: ${rawStandings.length}`);
+    log.push(`First entry keys: ${Object.keys(rawStandings[0] ?? {}).join(", ")}`);
+
+    // The API returns 3 entries (TOTAL/HOME/AWAY), each containing all groups.
+    // Find the TOTAL entry, then iterate its per-group data.
+    const totalEntry = rawStandings.find((s: Record<string, unknown>) => s.type === "TOTAL") ?? rawStandings[0];
+    log.push(`Total entry type: ${totalEntry?.type}, has 'standings' sub-key: ${"standings" in (totalEntry ?? {})}`);
+
+    // Sub-standings is an array of per-group objects
+    const groupStandings: StandingGroup[] = totalEntry?.standings ?? [];
+    log.push(`Group standings found: ${groupStandings.length}`);
+
+    // Fallback: maybe each top-level entry IS a group (older API format)
+    const standings: StandingGroup[] = groupStandings.length > 0 ? groupStandings : rawStandings;
+    log.push(`Using ${standings.length} group entries`);
 
     const rows: { name: string; flag: string; group_letter: string }[] = [];
     const thirdPlace: { name: string; flag: string; group_letter: string; pts: number; gd: number; gf: number }[] = [];
 
     standings.forEach((group) => {
-      const letter = group.group?.replace("GROUP_", "") ?? "";
-      const sorted = [...group.table].sort((a, b) => a.position - b.position);
+      const letter = (group.group ?? "").replace("GROUP_", "");
+      const sorted = [...(group.table ?? [])].sort((a, b) => a.position - b.position);
 
       sorted.slice(0, 2).forEach((entry) => {
         const name = normalize(entry.team.name);
@@ -138,8 +152,10 @@ interface ApiMatch {
 }
 
 interface StandingGroup {
-  group: string;
-  table: {
+  group?: string;
+  type?: string;
+  standings?: StandingGroup[];
+  table?: {
     position: number;
     points: number;
     goalDifference: number;
